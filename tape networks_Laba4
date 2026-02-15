@@ -1,0 +1,287 @@
+# Imports
+import os, warnings
+import matplotlib.pyplot as plt
+import numpy as np
+import tensorflow as tf
+from keras.preprocessing import image_dataset_from_directory
+
+# ====================
+# ПРОВЕРКА СТРУКТУРЫ ПАПОК
+# ====================
+# Исправьте путь на правильный - вероятно, вам нужна папка training_set
+images_path = r'C:\Users\keeper\PycharmProjects\Machine_laba4\dataset\training_set'
+
+# Проверим, существует ли этот путь
+if not os.path.exists(images_path):
+    print(f"ОШИБКА: Папка не найдена: {images_path}")
+
+    # Попробуем найти правильную структуру
+    print("\nПоиск правильной структуры данных...")
+    base_path = r'C:\Users\keeper\PycharmProjects\Machine_laba4\dataset'
+    for root, dirs, files in os.walk(base_path):
+        # Ищем папки cats и dogs
+        if 'cats' in dirs and 'dogs' in dirs:
+            images_path = root
+            print(f"Найдена правильная структура: {images_path}")
+            break
+    else:
+        print("Не удалось найти папки cats и dogs")
+        print("Создайте структуру:")
+        print("dataset/")
+        print("├── cats/    # с изображениями кошек")
+        print("└── dogs/    # с изображениями собак")
+        exit(1)
+
+print("=" * 60)
+print("ПРОВЕРКА СТРУКТУРЫ ДАННЫХ")
+print("=" * 60)
+
+subfolders = []
+for item in os.listdir(images_path):
+    full_path = os.path.join(images_path, item)
+    if os.path.isdir(full_path):
+        subfolders.append(item)
+        # Считаем изображения
+        image_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.gif')
+        images = [f for f in os.listdir(full_path) if f.lower().endswith(image_extensions)]
+        print(f"  {item}: {len(images)} изображений")
+
+if len(subfolders) < 2:
+    print(f"\nОШИБКА: В папке должно быть минимум 2 подпапки-класса. Найдено: {len(subfolders)}")
+    print("Создайте структуру:")
+    print("dataset/")
+    print("├── cats/    # с изображениями кошек")
+    print("└── dogs/    # с изображениями собак")
+    exit(1)
+
+print(f"\nНайдены классы: {subfolders}")
+print("=" * 60)
+
+
+# ====================
+# ВОСПРОИЗВОДИМОСТЬ
+# ====================
+def set_seed(seed=42):
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    os.environ['TF_DETERMINISTIC_OPS'] = '1'
+
+
+set_seed()
+
+# Параметры по умолчанию для matplotlib
+plt.rc('figure', autolayout=True)
+plt.rc('axes', labelweight='bold', labelsize='large',
+       titleweight='bold', titlesize=18, titlepad=10)
+plt.rc('image', cmap='magma')
+warnings.filterwarnings("ignore")  # to clean up output cells
+
+# ====================
+# ЗАГРУЗКА ДАННЫХ
+# ====================
+print("\nЗагрузка данных...")
+
+# Если папок больше 2, фильтруем только cats и dogs
+if len(subfolders) > 2:
+    print(f"Найдено {len(subfolders)} папок, но для бинарной классификации нужны только 'cats' и 'dogs'")
+    # Проверяем наличие cats и dogs
+    if 'cats' in subfolders and 'dogs' in subfolders:
+        print("Использую папки 'cats' и 'dogs' для обучения")
+    else:
+        print("❌ ОШИБКА: Папки 'cats' и/или 'dogs' не найдены")
+        exit(1)
+
+ds_train = image_dataset_from_directory(
+    images_path,  # Корневая папка с двумя подпапками
+    labels='inferred',
+    label_mode='binary',  # binary для 2 классов
+    image_size=[128, 128],
+    interpolation='nearest',
+    batch_size=64,
+    shuffle=True,
+    subset='training',
+    validation_split=0.2,  # 20% для валидации
+    seed=31415,
+)
+
+ds_valid = image_dataset_from_directory(
+    images_path,
+    labels='inferred',
+    label_mode='binary',
+    image_size=[128, 128],
+    interpolation='nearest',
+    batch_size=64,
+    shuffle=False,
+    subset='validation',
+    validation_split=0.2,
+    seed=31415,
+)
+
+print(f"✅ Данные загружены!")
+print(f"  Тренировочных батчей: {len(ds_train)}")
+print(f"  Валидационных батчей: {len(ds_valid)}")
+print(f"  Классы: {ds_train.class_names}")
+
+AUTOTUNE = tf.data.AUTOTUNE
+ds_train = ds_train.cache().shuffle(1000).prefetch(buffer_size=AUTOTUNE)
+ds_valid = ds_valid.cache().prefetch(buffer_size=AUTOTUNE)
+
+# ====================
+# ОСТАЛЬНОЙ КОД БЕЗ ИЗМЕНЕНИЙ
+# ====================
+from tensorflow import keras
+from keras import layers
+
+
+def build_model_simple(input_shape=(128, 128, 3)):
+    model = keras.Sequential([
+        layers.Rescaling(1. / 255),                 # Нормализация: преобразование пикселей [0-255] → [0-1]
+        layers.Conv2D(16, 3, activation="relu"),  # 1-я свертка: 16 фильтров 3x3
+        layers.MaxPool2D(),                                        # 1-й пуллинг: уменьшение в 2 раза
+        layers.Conv2D(32, 3, activation="relu"),  # 2-я свертка: 32 фильтра 3x3
+        layers.MaxPool2D(),                                 # 2-й пуллинг: уменьшение в 2 раза
+        layers.Flatten(),                                   # "Распрямление" 2D-тензора в вектор
+        layers.Dense(32, activation="relu"),          # Полносвязный слой: 32 нейрона
+        layers.Dense(1, activation="sigmoid")         # Выходной слой: 1 нейрон (кошка/собака)
+    ])
+    model.compile(optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"])
+    return model
+
+
+def build_model_medium(input_shape=(128, 128, 3)):
+    model = keras.Sequential([
+        layers.Rescaling(1. / 255),
+        layers.Conv2D(32, 3, padding="same", activation="relu"),  # padding="same" сохраняет размер
+        layers.BatchNormalization(),                              # Нормализация батча - ускоряет обучение
+        layers.MaxPool2D(),
+        layers.Conv2D(64, 3, padding="same", activation="relu"),  # Больше фильтров
+        layers.BatchNormalization(),
+        layers.MaxPool2D(),
+        layers.Conv2D(128, 3, padding="same", activation="relu"),  # Еще больше фильтров
+        layers.BatchNormalization(),
+        layers.MaxPool2D(),
+        layers.Flatten(),
+        layers.Dense(128, activation="relu"),
+        layers.Dropout(0.3),  # Регуляризация Dropout - предотвращает переобучение
+        layers.Dense(1, activation="sigmoid")
+    ])
+    model.compile(optimizer=keras.optimizers.Adam(1e-3), loss="binary_crossentropy", metrics=["accuracy"])
+    return model
+
+
+def conv_block(filters):
+    return keras.Sequential([
+        layers.Conv2D(filters, 3, padding="same", activation="relu"),
+        layers.BatchNormalization(),
+        layers.Conv2D(filters, 3, padding="same", activation="relu"),
+        layers.BatchNormalization(),
+    ])
+
+
+def build_model_deep(input_shape=(128, 128, 3)):
+    inputs = keras.Input(shape=input_shape)
+    x = layers.Rescaling(1. / 255)(inputs)
+
+    # Block 1
+    x = layers.Conv2D(32, 3, padding="same", activation="relu")(x)
+    x = layers.MaxPool2D()(x)
+
+    # Block 2 (residual-like)
+    x_res = conv_block(32)(x)
+    x = layers.Add()([x, x_res])
+    x = layers.MaxPool2D()(x)
+
+    # Block 3 (residual-like)
+    x_res = conv_block(32)(x)
+    x = layers.Add()([x, x_res])
+    x = layers.MaxPool2D()(x)
+
+    x = layers.Flatten()(x)
+    x = layers.Dense(256, activation="relu")(x)
+    x = layers.Dropout(0.4)(x)
+    outputs = layers.Dense(1, activation="sigmoid")(x)
+
+    model = keras.Model(inputs, outputs)
+    model.compile(optimizer=keras.optimizers.Adam(1e-4), loss="binary_crossentropy", metrics=["accuracy"])
+    return model
+
+
+# ====================
+# СОЗДАНИЕ И ОБУЧЕНИЕ МОДЕЛЕЙ
+# ====================
+models = {
+    "simple": build_model_simple(),
+    "medium": build_model_medium(),
+    "deep": build_model_deep(),
+}
+histories = {}
+
+print("\n" + "=" * 60)
+print("НАЧАЛО ОБУЧЕНИЯ МОДЕЛЕЙ")
+print("=" * 60)
+
+for name, model in models.items():
+    print(f"\n===== Обучаю модель: {name} =====")
+    history = model.fit(
+        ds_train,
+        validation_data=ds_valid,
+        epochs=10,
+        verbose=1
+    )
+    histories[name] = history
+    print(f"Модель '{name}' обучена!")
+
+# ====================
+# ВИЗУАЛИЗАЦИЯ РЕЗУЛЬТАТОВ
+# ====================
+import pandas as pd
+
+
+def plot_all_histories(histories):
+    num_models = len(histories)
+    fig, axes = plt.subplots(2, num_models, figsize=(6 * num_models, 10))
+
+    if num_models == 1:
+        axes = np.array([[axes[0]], [axes[1]]])
+
+    for idx, (name, history) in enumerate(histories.items()):
+        df = pd.DataFrame(history.history)
+
+        # LOSS
+        ax = axes[0, idx]
+        ax.plot(df["loss"], label="train_loss")
+        ax.plot(df["val_loss"], label="val_loss")
+        ax.set_title(f"{name} — Потери")
+        ax.set_xlabel("Эпохи")
+        ax.set_ylabel("Потери")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+        # ACCURACY
+        ax = axes[1, idx]
+        if "accuracy" in df.columns:
+            acc, val_acc = "accuracy", "val_accuracy"
+        else:
+            acc, val_acc = "binary_accuracy", "val_binary_accuracy"
+
+        ax.plot(df[acc], label=f"train_{acc}")
+        ax.plot(df[val_acc], label=f"val_{acc}")
+        ax.set_title(f"{name} — Точность")
+        ax.set_xlabel("Эпохи")
+        ax.set_ylabel("Точность")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
+
+print("\n" + "=" * 60)
+print("ВИЗУАЛИЗАЦИЯ РЕЗУЛЬТАТОВ")
+print("=" * 60)
+plot_all_histories(histories)
+
+print("\n" + "=" * 60)
+print("ОБУЧЕНИЕ ЗАВЕРШЕНО!")
+print("=" * 60)

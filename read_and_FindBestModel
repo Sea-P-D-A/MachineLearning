@@ -1,0 +1,456 @@
+import pandas as pd
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.experimental import enable_iterative_imputer
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.model_selection import cross_val_score, train_test_split
+from sklearn.metrics import mean_absolute_error
+from xgboost import XGBRegressor
+from sklearn.preprocessing import OrdinalEncoder
+from sklearn.preprocessing import TargetEncoder
+import numpy as np
+
+
+#1. Прочитать данные из датасета с помощью функции read_csv
+df = pd.read_csv('top_100_movies_full_best_effort.csv')
+
+print("Информация о данных:")
+print(df.info())
+print("\nПропущенные значения:")
+print(df.isnull().sum())
+
+# 2. Выбрать столбец для прогнозирования (y) и удалить строки с NaN в y
+target_column = 'IMDb Rating'  # замените на имя вашего целевого столбца
+y = df[target_column]
+
+# Удаляем строки, где целевая переменная NaN
+mask = y.notna()
+df = df[mask]
+y = y[mask]
+
+X = df.drop(target_column, axis=1)
+
+print(f"\nПосле очистки: {len(X)} строк")
+
+
+# 3. Найти категориальные и числовые столбцы
+categorical_columns = []
+numerical_columns = []
+
+# если уникальных данных колонки < 9 то в категориальный список
+
+for column in X.columns:
+    if X[column].dtype == 'object' or X[column].nunique() <= 8:
+        categorical_columns.append(column)
+    else:
+        numerical_columns.append(column)
+
+print("Категориальные столбцы:", categorical_columns)
+print("Числовые столбцы:", numerical_columns)
+
+# 5. Создать объект класса SimpleImputer для заполнения недостающих значений в числовых столбцах
+numerical_imputer = SimpleImputer(strategy='mean') #заполняет nan средними значениями
+numerical_imputer2 = SimpleImputer(strategy='most_frequent') #заполняет nan средними значениями
+numerical_imputer3 = SimpleImputer(strategy='median') #заполняет nan средними значениями
+
+numerical_imputer_mas = [numerical_imputer,numerical_imputer2,numerical_imputer3]
+
+# 6. Создать конвейер (Pipeline) для обработки категориальных столбцов
+categorical_pipeline = Pipeline([
+    # Заполнение категориальных столбцов самыми частыми значениями
+    ('imputer', SimpleImputer(strategy='most_frequent')),
+    # Преобразование категориальных текстовых данных в числовой формат
+    ('encoder', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+])
+
+categorical_pipeline3 = Pipeline([
+    # Заполнение категориальных столбцов самыми частыми значениями
+    ('imputer', SimpleImputer(strategy='most_frequent')),
+    # Преобразование категориальных текстовых данных в числовой формат
+    ('encoder', OrdinalEncoder(handle_unknown='use_encoded_value', unknown_value=-1))
+])
+
+categorical_pipeline_mas = [categorical_pipeline,categorical_pipeline3]
+
+#в цикле пройтись по всем числовым и котигориальным
+# 7. Создать препроцессор для всех выбранных столбцов с помощью класса ColumnTransformer
+preprocessor_mas = []
+
+for numerical in numerical_imputer_mas:
+    for categorical in categorical_pipeline_mas:
+        preprocessor_test = ColumnTransformer(
+            transformers=[
+                # Название любое, как преоразовывать, что преобразовывать
+                ('num', numerical, numerical_columns),
+                ('cat', categorical, categorical_columns)
+            ])
+        preprocessor_mas.append(preprocessor_test)
+
+# 10. Разделить данные на обучающий и тестовый набор с помощью метода train_test_split
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+xgb_mae_max = 999.1
+best_p = ColumnTransformer([])
+for p in preprocessor_mas:
+    p_test = Pipeline([
+        ('preprocessor', p),
+        ('model', RandomForestRegressor(n_estimators=100, random_state=42))
+    ])
+
+  #  p_test.compile(
+  #  optimizer='adam',
+  #  loss='mae',)
+
+
+
+
+    p_test.fit(X_train, y_train)
+    y_pred = p_test.predict(X_test)
+    xgb_mae_test = mean_absolute_error(y_test, y_pred)
+    print(f"XGBoost MAE (тестовый набор): {xgb_mae_test:.4f}")
+    if xgb_mae_max > xgb_mae_test:
+        xgb_mae_max = xgb_mae_test
+        best_p = p
+print(f"XGBoost Лучшее: MAE = {xgb_mae_max:.4f}")
+
+preprocessor = best_p
+
+
+
+
+
+
+
+
+
+# 8. Создать итоговый конвейер, включающий этап препроцессинга и этап моделирования с помощью класса RandomForestRegressor
+rf_pipeline = Pipeline([
+    ('preprocessor', preprocessor),
+#n_estimators=100 - количество деревьев в лесу:
+#Больше деревьев = лучше качество, но дольше обучение
+    ('model', RandomForestRegressor(n_estimators=100, random_state=42))
+])
+
+# 9. Для созданного конвейера провести кроссвалидацию и вывести среднюю абсолютную ошибку
+rf_scores = cross_val_score(rf_pipeline, X, y, cv=5, scoring='neg_mean_absolute_error')
+rf_mae = -rf_scores.mean()
+print(f"Random Forest MAE (кроссвалидация): {rf_mae:.4f}")
+
+
+# 11. Создать конвейер, включающий этап препроцессинга и этап моделирования с помощью класса XGBRegressor
+xgb_pipeline = Pipeline([
+    ('preprocessor', preprocessor),
+    ('model', XGBRegressor(n_estimators=100, random_state=42))
+])
+
+xgb_pipeline_mas = []
+
+for preproc in preprocessor_mas:
+    xgb_pipeline_test = Pipeline([
+        ('preprocessor', preproc),
+        ('model', XGBRegressor(n_estimators=100, random_state=42))
+    ])
+    xgb_pipeline_mas.append(xgb_pipeline_test)
+
+# 12. Для последнего конвейера провести обучение (fit), сделать предсказание (predict) и напечатать среднюю абсолютную ошибку
+xgb_pipeline.fit(X_train, y_train)
+y_pred = xgb_pipeline.predict(X_test)
+xgb_mae = mean_absolute_error(y_test, y_pred)
+print(f"XGBoost MAE (тестовый набор): {xgb_mae:.4f}")
+
+# 13. Сделать вывод об эффективности алгоритма градиентного спуска и случайного леса с использованием кроссвалидации
+print("\nВывод:")
+print(f"Random Forest (кроссвалидация): MAE = {rf_mae:.4f}")
+print(f"XGBoost (тестовый набор): MAE = {xgb_mae:.4f}")
+
+if rf_mae < xgb_mae:
+    print("Random Forest показал лучшую производительность")
+elif rf_mae > xgb_mae:
+    print("XGBoost показал лучшую производительность")
+else:
+    print("Оба алгоритма показали одинаковую производительность")
+
+
+print("\n\n----ДОПОЛНЕНИЕ----\n\n")
+
+
+
+
+
+#Random Forest:
+# 1.Строит независимые деревья
+# 2.Использует бэггинг (усреднение предсказаний)
+# 3.Хорошо борется с переобучением, но может "недотягивать" в точности
+
+#XGBoost (Gradient Boosting):
+# 1.Строит деревья последовательно
+# 2.Каждое новое дерево исправляет ошибки предыдущего
+# 3.Использует градиентный спуск для минимизации ошибки
+# 4.очень быстро может переобучится
+
+import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.model_selection import learning_curve
+
+print("\n\n----ДОПОЛНЕНИЕ----\n\n")
+
+# Random Forest:
+# 1.Строит независимые деревья
+# 2.Использует бэггинг (усреднение предсказаний)
+# 3.Хорошо борется с переобучением, но может "недотягивать" в точности
+
+# XGBoost (Gradient Boosting):
+# 1.Строит деревья последовательно
+# 2.Каждое новое дерево исправляет ошибки предыдущего
+# 3.Использует градиентный спуск для минимизации ошибки
+# 4.очень быстро может переобучится
+
+# ======== ГРАФИКИ ========
+
+print("\n" + "=" * 70)
+print("ПОСТРОЕНИЕ ГРАФИКОВ ДЛЯ ВСЕХ МОДЕЛЕЙ")
+print("=" * 70)
+
+# Создаем списки для хранения данных
+rf_models = []
+rf_model_names = []
+rf_val_errors = []  # Ошибки валидации
+rf_train_errors = []  # Ошибки обучения
+
+xgb_models = []
+xgb_model_names = []
+xgb_val_errors = []  # Ошибки валидации
+xgb_train_errors = []  # Ошибки обучения
+
+print("\nПодготовка данных для Random Forest моделей...")
+
+# Создаем Random Forest модели с разными препроцессорами
+for i, preproc in enumerate(preprocessor_mas):
+    rf_model = Pipeline([
+        ('preprocessor', preproc),
+        ('model', RandomForestRegressor(n_estimators=100, random_state=42))
+    ])
+
+    # Получаем кривые обучения
+    train_sizes, train_scores, val_scores = learning_curve(
+        rf_model, X_train, y_train, cv=3,
+        scoring='neg_mean_absolute_error',
+        train_sizes=np.linspace(0.2, 1.0, 5),
+        random_state=42,
+        n_jobs=-1
+    )
+
+    train_mae = -train_scores.mean(axis=1)
+    val_mae = -val_scores.mean(axis=1)
+
+    rf_models.append((train_sizes, train_mae, val_mae))
+    rf_model_names.append(f'RF Model {i + 1}')
+    rf_val_errors.append(val_mae[-1])  # Последнее значение ошибки валидации
+    rf_train_errors.append(train_mae[-1])  # Последнее значение ошибки обучения
+
+    print(f"  RF Model {i + 1}: обучение = {train_mae[-1]:.4f}, валидация = {val_mae[-1]:.4f}")
+
+print(f"\nПодготовлено {len(rf_models)} Random Forest моделей")
+
+print("\nПодготовка данных для XGBoost моделей...")
+
+# Создаем XGBoost модели с разными препроцессорами
+for i, preproc in enumerate(preprocessor_mas):
+    xgb_model = Pipeline([
+        ('preprocessor', preproc),
+        ('model', XGBRegressor(n_estimators=100, random_state=42))
+    ])
+
+    # Получаем кривые обучения
+    train_sizes, train_scores, val_scores = learning_curve(
+        xgb_model, X_train, y_train, cv=3,
+        scoring='neg_mean_absolute_error',
+        train_sizes=np.linspace(0.2, 1.0, 5),
+        random_state=42,
+        n_jobs=-1
+    )
+
+    train_mae = -train_scores.mean(axis=1)
+    val_mae = -val_scores.mean(axis=1)
+
+    xgb_models.append((train_sizes, train_mae, val_mae))
+    xgb_model_names.append(f'XGB Model {i + 1}')
+    xgb_val_errors.append(val_mae[-1])  # Последнее значение ошибки валидации
+    xgb_train_errors.append(train_mae[-1])  # Последнее значение ошибки обучения
+
+    print(f"  XGB Model {i + 1}: обучение = {train_mae[-1]:.4f}, валидация = {val_mae[-1]:.4f}")
+
+print(f"\nПодготовлено {len(xgb_models)} XGBoost моделей")
+
+# ======== ГРАФИК 1: ОШИБКА ВАЛИДАЦИИ RANDOM FOREST ========
+print("\n1. Строим график ошибки валидации для Random Forest...")
+
+fig1, ax1 = plt.subplots(figsize=(14, 6))
+
+# Цвета для разных моделей
+colors = plt.cm.Set3(np.linspace(0, 1, len(rf_models)))
+
+for i, (train_sizes, train_mae, val_mae) in enumerate(rf_models):
+    ax1.plot(train_sizes, val_mae, 'o-', color=colors[i],
+             linewidth=2, markersize=6, label=rf_model_names[i])
+
+ax1.set_title('Ошибка валидации (Validation Error) - Random Forest', fontsize=16, fontweight='bold')
+ax1.set_xlabel('Размер обучающей выборки', fontsize=12)
+ax1.set_ylabel('MAE (ошибка валидации)', fontsize=12)
+ax1.legend(title='Модели RF', fontsize=10, title_fontsize=11)
+ax1.grid(True, alpha=0.3)
+ax1.set_ylim(bottom=0)  # Начинаем с 0 для лучшей наглядности
+
+# Добавляем аннотации для последних значений
+for i, val_error in enumerate(rf_val_errors):
+    ax1.text(train_sizes[-1], val_error, f'  {val_error:.3f}',
+             fontsize=9, verticalalignment='center')
+
+plt.tight_layout()
+plt.savefig('rf_validation_error.png', dpi=150, bbox_inches='tight')
+print("✓ График сохранен: 'rf_validation_error.png'")
+plt.show()
+
+# ======== ГРАФИК 2: ОШИБКА ОБУЧЕНИЯ RANDOM FOREST ========
+print("\n2. Строим график ошибки обучения для Random Forest...")
+
+fig2, ax2 = plt.subplots(figsize=(14, 6))
+
+for i, (train_sizes, train_mae, val_mae) in enumerate(rf_models):
+    ax2.plot(train_sizes, train_mae, 'o-', color=colors[i],
+             linewidth=2, markersize=6, label=rf_model_names[i])
+
+ax2.set_title('Ошибка обучения (Training Error) - Random Forest', fontsize=16, fontweight='bold')
+ax2.set_xlabel('Размер обучающей выборки', fontsize=12)
+ax2.set_ylabel('MAE (ошибка обучения)', fontsize=12)
+ax2.legend(title='Модели RF', fontsize=10, title_fontsize=11)
+ax2.grid(True, alpha=0.3)
+ax2.set_ylim(bottom=0)  # Начинаем с 0 для лучшей наглядности
+
+# Добавляем аннотации для последних значений
+for i, train_error in enumerate(rf_train_errors):
+    ax2.text(train_sizes[-1], train_error, f'  {train_error:.3f}',
+             fontsize=9, verticalalignment='center')
+
+plt.tight_layout()
+plt.savefig('rf_training_error.png', dpi=150, bbox_inches='tight')
+print("✓ График сохранен: 'rf_training_error.png'")
+plt.show()
+
+# ======== ГРАФИК 3: ОШИБКА ВАЛИДАЦИИ XGBOOST ========
+print("\n3. Строим график ошибки валидации для XGBoost...")
+
+fig3, ax3 = plt.subplots(figsize=(14, 6))
+
+# Цвета для разных моделей XGBoost
+xgb_colors = plt.cm.Set2(np.linspace(0, 1, len(xgb_models)))
+
+for i, (train_sizes, train_mae, val_mae) in enumerate(xgb_models):
+    ax3.plot(train_sizes, val_mae, 'o-', color=xgb_colors[i],
+             linewidth=2, markersize=6, label=xgb_model_names[i])
+
+ax3.set_title('Ошибка валидации (Validation Error) - XGBoost', fontsize=16, fontweight='bold')
+ax3.set_xlabel('Размер обучающей выборки', fontsize=12)
+ax3.set_ylabel('MAE (ошибка валидации)', fontsize=12)
+ax3.legend(title='Модели XGB', fontsize=10, title_fontsize=11)
+ax3.grid(True, alpha=0.3)
+ax3.set_ylim(bottom=0)  # Начинаем с 0 для лучшей наглядности
+
+# Добавляем аннотации для последних значений
+for i, val_error in enumerate(xgb_val_errors):
+    ax3.text(train_sizes[-1], val_error, f'  {val_error:.3f}',
+             fontsize=9, verticalalignment='center')
+
+plt.tight_layout()
+plt.savefig('xgb_validation_error.png', dpi=150, bbox_inches='tight')
+print("✓ График сохранен: 'xgb_validation_error.png'")
+plt.show()
+
+# ======== ГРАФИК 4: ОШИБКА ОБУЧЕНИЯ XGBOOST ========
+print("\n4. Строим график ошибки обучения для XGBoost...")
+
+fig4, ax4 = plt.subplots(figsize=(14, 6))
+
+for i, (train_sizes, train_mae, val_mae) in enumerate(xgb_models):
+    ax4.plot(train_sizes, train_mae, 'o-', color=xgb_colors[i],
+             linewidth=2, markersize=6, label=xgb_model_names[i])
+
+ax4.set_title('Ошибка обучения (Training Error) - XGBoost', fontsize=16, fontweight='bold')
+ax4.set_xlabel('Размер обучающей выборки', fontsize=12)
+ax4.set_ylabel('MAE (ошибка обучения)', fontsize=12)
+ax4.legend(title='Модели XGB', fontsize=10, title_fontsize=11)
+ax4.grid(True, alpha=0.3)
+ax4.set_ylim(bottom=0)  # Начинаем с 0 для лучшей наглядности
+
+# Добавляем аннотации для последних значений
+for i, train_error in enumerate(xgb_train_errors):
+    ax4.text(train_sizes[-1], train_error, f'  {train_error:.3f}',
+             fontsize=9, verticalalignment='center')
+
+plt.tight_layout()
+plt.savefig('xgb_training_error.png', dpi=150, bbox_inches='tight')
+print("✓ График сохранен: 'xgb_training_error.png'")
+plt.show()
+
+# ======== СРАВНИТЕЛЬНАЯ ТАБЛИЦА ========
+print("\n" + "=" * 70)
+print("СРАВНИТЕЛЬНАЯ ТАБЛИЦА РЕЗУЛЬТАТОВ")
+print("=" * 70)
+
+print(f"\n{'Модель':<20} {'Ошибка обучения':<20} {'Ошибка валидации':<20}")
+print("-" * 60)
+
+# Random Forest
+print("\nRANDOM FOREST:")
+for i in range(len(rf_models)):
+    print(f"{rf_model_names[i]:<20} {rf_train_errors[i]:<20.4f} {rf_val_errors[i]:<20.4f}")
+
+# XGBoost
+print("\nXGBOOST:")
+for i in range(len(xgb_models)):
+    print(f"{xgb_model_names[i]:<20} {xgb_train_errors[i]:<20.4f} {xgb_val_errors[i]:<20.4f}")
+
+# Находим лучшие модели
+best_rf_idx = np.argmin(rf_val_errors)
+best_xgb_idx = np.argmin(xgb_val_errors)
+
+print(f"\n{'=' * 60}")
+print(f"ЛУЧШАЯ Random Forest модель: {rf_model_names[best_rf_idx]}")
+print(f"  Ошибка валидации: {rf_val_errors[best_rf_idx]:.4f}")
+print(f"  Ошибка обучения: {rf_train_errors[best_rf_idx]:.4f}")
+print(f"  Разница (переобучение): {abs(rf_train_errors[best_rf_idx] - rf_val_errors[best_rf_idx]):.4f}")
+
+print(f"\nЛУЧШАЯ XGBoost модель: {xgb_model_names[best_xgb_idx]}")
+print(f"  Ошибка валидации: {xgb_val_errors[best_xgb_idx]:.4f}")
+print(f"  Ошибка обучения: {xgb_train_errors[best_xgb_idx]:.4f}")
+print(f"  Разница (переобучение): {abs(xgb_train_errors[best_xgb_idx] - xgb_val_errors[best_xgb_idx]):.4f}")
+
+print(f"\n{'=' * 60}")
+print("АНАЛИЗ ПЕРЕОБУЧЕНИЯ:")
+print("  • Разница < 0.05: отличная модель (минимальное переобучение)")
+print("  • Разница 0.05-0.1: хорошая модель (умеренное переобучение)")
+print("  • Разница > 0.1: возможное переобучение")
+
+rf_diff = abs(rf_train_errors[best_rf_idx] - rf_val_errors[best_rf_idx])
+xgb_diff = abs(xgb_train_errors[best_xgb_idx] - xgb_val_errors[best_xgb_idx])
+
+print(f"\nРЕКОМЕНДАЦИИ:")
+if rf_diff < xgb_diff:
+    print("  ✓ Random Forest показывает меньшее переобучение")
+else:
+    print("  ✓ XGBoost показывает меньшее переобучение")
+
+if min(rf_val_errors) < min(xgb_val_errors):
+    print("  ✓ Random Forest имеет лучшую ошибку валидации")
+else:
+    print("  ✓ XGBoost имеет лучшую ошибку валидации")
+
+print(f"\n{'=' * 70}")
+print("ГРАФИКИ СОХРАНЕНЫ:")
+print("  • rf_validation_error.png - ошибка валидации RF")
+print("  • rf_training_error.png - ошибка обучения RF")
+print("  • xgb_validation_error.png - ошибка валидации XGB")
+print("  • xgb_training_error.png - ошибка обучения XGB")
+print(f"{'=' * 70}")

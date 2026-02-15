@@ -1,0 +1,422 @@
+# Импорт необходимых библиотек
+import pandas as pd  # Для работы с табличными данными
+import numpy as np  # Для математических операций и работы с массивами
+import matplotlib.pyplot as plt  # Для построения графиков
+from sklearn.model_selection import train_test_split  # Для разделения данных на тренировочные и тестовые
+from sklearn.preprocessing import StandardScaler, LabelEncoder  # Для нормализации и кодирования данных
+from tensorflow import keras  # Основной фреймворк для нейронных сетей
+from keras import layers, callbacks  # layers - для создания слоев, callbacks - для управления обучением
+import warnings  # Для контроля предупреждений
+
+# Отключаем предупреждения, чтобы не засорять вывод
+warnings.filterwarnings('ignore')
+
+
+df = pd.read_csv('top_100_movies_full_best_effort.csv')
+
+print("Размер данных:", df.shape)
+print("\nПервые 5 строк:")
+print(df.head())
+print("\nИнформация о данных:")
+print(df.info())
+print("\nПропущенные значения:")
+print(df.isnull().sum())  # Подсчет пропусков в каждом столбце
+
+for column in df.columns:
+    if df[column].dtype in ['int64', 'float64']:
+        df[column].fillna(df[column].median(), inplace=True)
+    else:
+        # Для нечисловых столбцов заполняем пропуски модой (самое частое значение)
+        # Проверяем, есть ли мода в столбце, если нет - используем 'Unknown'
+        df[column].fillna(df[column].mode()[0] if not df[column].mode().empty else 'Unknown', inplace=True)
+
+target = 'IMDb Rating'
+
+# Список числовых признаков, которые будем использовать
+numeric_features = ['Year', 'Runtime (mins)', 'Oscars Won', 'Box Office ($M)',
+                    'Metacritic Score', 'Rotten Tomatoes %']
+
+# ====================
+# СОЗДАНИЕ НОВЫХ ПРИЗНАКОВ
+# ====================
+
+# Создаем новые признаки на основе категориальных данных:
+
+# 1. Количество жанров у фильма (разделяем строку по '|' и считаем элементы)
+df['Genre_Count'] = df['Genre(s)'].apply(lambda x: len(str(x).split('|')))
+
+# 2. Количество стран производства
+df['Country_Count'] = df['Country'].apply(lambda x: len(str(x).split('|')))
+
+# 3. Количество языков
+df['Language_Count'] = df['Language'].apply(lambda x: len(str(x).split('|')))
+
+# 4. Количество главных актеров
+df['Actor_Count'] = df['Main Actor(s)'].apply(lambda x: len(str(x).split('|')))
+
+# Добавляем созданные признаки к списку числовых признаков
+numeric_features.extend(['Genre_Count', 'Country_Count', 'Language_Count', 'Actor_Count'])  # Расширяем список
+
+# ====================
+# ПРЕОБРАЗОВАНИЕ ПРИЗНАКОВ
+# ====================
+
+# Выделяем числовые признаки в отдельную матрицу
+X_numeric = df[numeric_features].copy()
+
+# Нормализуем числовые признаки (приводим к одному масштабу)
+scaler = StandardScaler()  # Создаем объект нормализатора
+X_numeric_scaled = scaler.fit_transform(X_numeric)  # Обучение на данных и преобразование
+
+# ====================
+# КОДИРОВАНИЕ КАТЕГОРИАЛЬНЫХ ПРИЗНАКОВ
+# ====================
+
+# Словарь для хранения кодировщиков
+label_encoders = {}
+categorical_features = []  # Список кодированных категориальных признаков
+
+# 1. Создаем признак "популярность режиссера"
+# Считаем, сколько фильмов снял каждый режиссер
+director_counts = df['Director'].value_counts()
+# Присваиваем каждому режиссеру количество его фильмов
+df['Director_Popularity'] = df['Director'].apply(lambda x: director_counts.get(x, 0))
+
+# 2. Кодируем имена режиссеров в числа
+le_director = LabelEncoder()  # Создаем кодировщик
+df['Director_Encoded'] = le_director.fit_transform(df['Director'])  # Преобразуем строки в числа
+label_encoders['Director'] = le_director  # Сохраняем кодировщик для возможного обратного преобразования
+categorical_features.append('Director_Encoded')  # Добавляем в список категориальных признаков
+
+# 3. Выделяем первую страну из списка стран
+df['First_Country'] = df['Country'].apply(lambda x: str(x).split('|')[0])
+# Кодируем названия стран
+le_country = LabelEncoder()
+df['First_Country_Encoded'] = le_country.fit_transform(df['First_Country'])
+label_encoders['Country'] = le_country
+categorical_features.append('First_Country_Encoded')
+
+# ====================
+# ФОРМИРОВАНИЕ ОКОНЧАТЕЛЬНЫХ ДАННЫХ
+# ====================
+
+# Получаем значения категориальных признаков
+X_categorical = df[categorical_features].values
+
+# Объединяем нормализованные числовые и кодированные категориальные признаки
+X = np.hstack([X_numeric_scaled, X_categorical])
+
+# Выделяем целевую переменную
+y = df[target].values
+
+# Разделяем данные на тренировочные (80%) и тестовые (20%)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42
+)
+
+# Выводим размеры полученных наборов данных
+print(f"\nРазмеры данных:")
+print(f"X_train: {X_train.shape}")  # Матрица признаков для обучения
+print(f"X_test: {X_test.shape}")  # Матрица признаков для тестирования
+print(f"y_train: {y_train.shape}")  # Целевые значения для обучения
+print(f"y_test: {y_test.shape}")  # Целевые значения для тестирования
+
+
+# ====================
+# 3. СОЗДАНИЕ МОДЕЛЕЙ
+# ====================
+
+# Функция 1: Простая модель с двумя скрытыми слоями
+def build_model_1():
+    model = keras.Sequential([  # Sequential - последовательная модель
+        layers.Dense(64, activation='relu', input_shape=[X_train.shape[1]]),  # 1-й скрытый слой, 64 нейрона
+        layers.Dense(32, activation='relu'),  # 2-й скрытый слой, 32 нейрона
+        layers.Dense(1)  # Выходной слой (регрессия)
+    ])
+    return model
+
+# Функция 2: Более широкая модель с тремя скрытыми слоями
+def build_model_2():
+    model = keras.Sequential([
+        layers.Dense(128, activation='relu', input_shape=[X_train.shape[1]]),  # 128 нейронов
+        layers.Dense(64, activation='relu'),  # 64 нейрона
+        layers.Dense(32, activation='relu'),  # 32 нейрона
+        layers.Dense(1)  # Выходной слой
+    ])
+    return model
+
+# Функция 3: Модель с регуляризацией Dropout (для борьбы с переобучением)
+def build_model_3():
+    model = keras.Sequential([
+        layers.Dense(128, activation='relu', input_shape=[X_train.shape[1]]),
+        layers.Dropout(0.3),  # Отключает 30% нейронов случайным образом на каждой эпохе
+        layers.Dense(64, activation='relu'),
+        layers.Dropout(0.3),  # dropout
+        layers.Dense(32, activation='relu'),
+        layers.Dense(1)
+    ])
+    return model
+
+# Функция 4: Модель с BatchNormalization (ускорение обучения, стабилизация)
+def build_model_4():
+    model = keras.Sequential([
+        layers.Dense(128, activation='relu', input_shape=[X_train.shape[1]]),
+        layers.BatchNormalization(),  # Нормализует активации предыдущего слоя
+        layers.Dense(64, activation='relu'),
+        layers.BatchNormalization(),
+        layers.Dense(32, activation='relu'),
+        layers.BatchNormalization(),
+        layers.Dense(1)
+    ])
+    return model
+
+
+# Функция 5: Глубокая модель с 6 скрытыми слоями
+def build_model_5():
+    model = keras.Sequential([
+        layers.Dense(256, activation='relu', input_shape=[X_train.shape[1]]),  # 256 нейронов
+        layers.Dense(128, activation='relu'),
+        layers.Dense(64, activation='relu'),
+        layers.Dense(32, activation='relu'),
+        layers.Dense(16, activation='relu'),
+        layers.Dense(8, activation='relu'),  # Всего 6 скрытых слоев
+        layers.Dense(1)
+    ])
+    return model
+
+
+# ====================
+# 4. ОБУЧЕНИЕ МОДЕЛЕЙ
+# ====================
+
+models = {
+    'Model 1 (Simple)': build_model_1(),
+    'Model 2 (Wide)': build_model_2(),
+    'Model 3 (Dropout)': build_model_3(),
+    'Model 4 (BatchNorm)': build_model_4(),
+    'Model 5 (Deep)': build_model_5()
+}
+
+histories = {}
+
+epochs = 200  # Максимальное количество эпох
+batch_size = 16  # количество образцов за одну итерацию
+
+# Callback для ранней остановки (прекращает обучение, если нет улучшений)
+early_stopping = callbacks.EarlyStopping(
+    min_delta=0.001,  # Минимальное изменение для учета улучшения
+    patience=30,  # Количество эпох без улучшений перед остановкой
+    restore_best_weights=True,  # Восстанавливает веса лучшей эпохи
+    verbose=1  # Вывод информации об остановке
+)
+
+# Обучаем каждую модель
+for name, model in models.items():
+    print(f"\n{'=' * 50}")
+    print(f"Обучение модели: {name}")
+    print(f"{'=' * 50}")
+
+    # Компиляция модели: настройка оптимизатора, функции потерь и метрик
+    model.compile(
+        optimizer=keras.optimizers.Adam(learning_rate=0.001),  # Оптимизатор Adam с learning rate 0.001
+        loss='mse',  # Mean Squared Error для регрессии
+        metrics=['mae']  # Mean Absolute Error как дополнительная метрика
+    )
+
+    # Обучение модели
+    history = model.fit(
+        X_train, y_train,  # Данные для обучения
+        validation_split=0.2,  # 20% тренировочных данных для валидации
+        epochs=epochs,
+        batch_size=batch_size,
+        callbacks=[early_stopping],
+        verbose=0  # Без подробного вывода
+    )
+
+    # Сохраняем историю обучения
+    histories[name] = history
+
+    # Оценка модели на тестовых данных
+    test_loss, test_mae = model.evaluate(X_test, y_test, verbose=0)
+    print(f"Test MSE: {test_loss:.4f}, Test MAE: {test_mae:.4f}")
+
+plt.figure(figsize=(20, 12))
+
+# Строим графики потерь для каждой модели
+for i, (name, history) in enumerate(histories.items(), 1):
+    plt.subplot(3, 2, i)  # Создаем подграфик (3 строки, 2 столбца, позиция i)
+
+    plt.plot(history.history['loss'], label='Train Loss', linewidth=2)
+
+    plt.plot(history.history['val_loss'], label='Validation Loss', linewidth=2)
+
+    # Заголовок с финальными значениями потерь
+    plt.title(f'{name}\nFinal Train Loss: {history.history["loss"][-1]:.4f}, '
+              f'Val Loss: {history.history["val_loss"][-1]:.4f}')
+    plt.xlabel('Epochs')  # Ось X - эпохи
+    plt.ylabel('MSE Loss')  # Ось Y - значение потерь (MSE)
+    plt.legend()  # Легенда для идентификации линий
+    plt.grid(True, alpha=0.3)
+
+    # Находим эпоху с минимальной валидационной потерей
+    min_val_loss = min(history.history['val_loss'])
+    min_epoch = history.history['val_loss'].index(min_val_loss) + 1  # +1 т.к. индексация с 0
+
+    # Вертикальная линия на эпохе с минимальной потерей
+    plt.axvline(x=min_epoch, color='r', linestyle='--', alpha=0.5,
+                label=f'Min Val Loss at epoch {min_epoch}')
+    plt.legend()
+
+# Убираем наложение элементов
+plt.tight_layout()
+plt.show()
+
+# ====================
+# 6. ПОДРОБНЫЙ АНАЛИЗ
+# ====================
+
+print("\n" + "=" * 60)
+print("АНАЛИЗ РЕЗУЛЬТАТОВ")
+print("=" * 60)
+
+# Собираем результаты всех моделей в список
+results = []
+
+for name, history in histories.items():
+    train_loss = history.history['loss'][-1]  # Финальная тренировочная потеря
+    val_loss = history.history['val_loss'][-1]  # Финальная валидационная потеря
+    min_val_loss = min(history.history['val_loss'])  # Минимальная валидационная потеря
+    min_epoch = history.history['val_loss'].index(min_val_loss) + 1  # Эпоха минимальной потери
+    epochs_trained = len(history.history['loss'])  # Количество эпох обучения
+
+    # Проверка на переобучение: если валидационная потеря > тренировочной на 20%
+    overfitting = val_loss > train_loss * 1.2
+
+    results.append({
+        'Model': name,
+        'Train Loss': train_loss,
+        'Val Loss': val_loss,
+        'Min Val Loss': min_val_loss,
+        'Epoch of Min Val': min_epoch,
+        'Epochs Trained': epochs_trained,
+        'Overfitting': overfitting
+    })
+
+# Создаем DataFrame и сортируем по минимальной валидационной потере
+results_df = pd.DataFrame(results)
+results_df = results_df.sort_values('Min Val Loss')
+
+print("\nСравнение моделей (отсортировано по минимальной валидационной потере):")
+print(results_df.to_string(index=False))
+
+# ====================
+# 8. ОПРЕДЕЛЕНИЕ ЛУЧШЕЙ МОДЕЛИ
+# ====================
+
+# Первая модель в отсортированном DataFrame - лучшая
+best_model_name = results_df.iloc[0]['Model']
+best_model = models[best_model_name]
+best_history = histories[best_model_name]
+
+print(f"\n{'=' * 60}")
+print(f"ЛУЧШАЯ МОДЕЛЬ: {best_model_name}")
+print(f"{'=' * 60}")
+print(f"Минимальная валидационная потеря: {results_df.iloc[0]['Min Val Loss']:.4f}")
+print(f"Эпоха минимальной потери: {results_df.iloc[0]['Epoch of Min Val']}")
+print(f"Финальная тренировочная потеря: {results_df.iloc[0]['Train Loss']:.4f}")
+print(f"Финальная валидационная потеря: {results_df.iloc[0]['Val Loss']:.4f}")
+
+# ====================
+# 9. АНАЛИЗ ЛУЧШЕЙ МОДЕЛИ
+# ====================
+
+plt.figure(figsize=(15, 5))
+
+# График 1: Потери лучшей модели
+plt.subplot(1, 3, 1)
+plt.plot(best_history.history['loss'], label='Train Loss', linewidth=2)
+plt.plot(best_history.history['val_loss'], label='Validation Loss', linewidth=2)
+plt.title(f'Лучшая модель: {best_model_name}')
+plt.xlabel('Epochs')
+plt.ylabel('MSE Loss')
+plt.legend()
+plt.grid(True, alpha=0.3)
+
+# График 2: Предсказания vs Фактические значения
+plt.subplot(1, 3, 2)
+y_pred = best_model.predict(X_test).flatten()  # Получаем предсказания и преобразуем в 1D массив
+plt.scatter(y_test, y_pred, alpha=0.6)  # Диаграмма рассеяния
+# Линия идеальных предсказаний (y = x)
+plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()],
+         'r--', lw=2, label='Ideal')
+plt.xlabel('Фактические значения IMDb Rating')
+plt.ylabel('Предсказанные значения')
+plt.title('Предсказания vs Фактические значения')
+plt.legend()
+plt.grid(True, alpha=0.3)
+
+# График 3: Распределение ошибок
+plt.subplot(1, 3, 3)
+errors = y_pred - y_test  # Вычисляем ошибки (предсказание - истинное значение)
+plt.hist(errors, bins=20, edgecolor='black', alpha=0.7)  # Гистограмма ошибок
+plt.xlabel('Ошибка предсказания')
+plt.ylabel('Частота')
+plt.title('Распределение ошибок предсказаний')
+plt.axvline(x=0, color='r', linestyle='--', label='Zero Error')  # Вертикальная линия на 0
+plt.legend()
+plt.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+
+# ====================
+# 10. МЕТРИКИ ЛУЧШЕЙ МОДЕЛИ
+# ====================
+
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+# Вычисляем различные метрики качества
+y_pred = best_model.predict(X_test).flatten()
+
+mae = mean_absolute_error(y_test, y_pred)  # Средняя абсолютная ошибка
+mse = mean_squared_error(y_test, y_pred)  # Среднеквадратичная ошибка
+rmse = np.sqrt(mse)  # Корень из MSE
+r2 = r2_score(y_test, y_pred)  # Коэффициент детерминации R^2
+
+print(f"\nМетрики лучшей модели ({best_model_name}) на тестовых данных:")
+print(f"MAE (Средняя абсолютная ошибка): {mae:.4f}")
+print(f"MSE (Среднеквадратичная ошибка): {mse:.4f}")
+print(f"RMSE (Корень из MSE): {rmse:.4f}")
+print(f"R² Score: {r2:.4f}")
+"""
+# ====================
+# 11. АНАЛИЗ ВАЖНОСТИ ПРИЗНАКОВ
+# ====================
+
+# Получаем веса первого слоя лучшей модели
+first_layer_weights = best_model.layers[0].get_weights()[0]
+
+# Список всех признаков (числовые + категориальные)
+all_features = numeric_features + categorical_features
+
+# Вычисляем важность признаков как сумму абсолютных значений весов
+feature_importance = np.abs(first_layer_weights).sum(axis=1)
+
+# Создаем DataFrame для удобной работы
+importance_df = pd.DataFrame({
+    'Feature': all_features,
+    'Importance': feature_importance
+}).sort_values('Importance', ascending=False)  # Сортировка по убыванию важности
+
+print(f"\nТоп-10 наиболее важных признаков:")
+print(importance_df.head(10).to_string(index=False))
+
+# Визуализация важности признаков
+plt.figure(figsize=(10, 6))
+# Горизонтальная столбчатая диаграмма (barh)
+plt.barh(importance_df['Feature'][:10][::-1], importance_df['Importance'][:10][::-1])
+plt.xlabel('Важность признака (абсолютная сумма весов)')
+plt.title('Топ-10 важных признаков для лучшей модели')
+plt.tight_layout()
+plt.show()
+"""

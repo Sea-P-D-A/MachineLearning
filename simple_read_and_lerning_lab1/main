@@ -1,1 +1,88 @@
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_absolute_error
 
+# Настройка отображения всех столбцов
+#pd.set_option('display.max_columns', None)  # Показать все столбцы
+pd.set_option('display.width', None)  # Убрать ограничение по ширине
+pd.set_option('display.max_colwidth', None)  # Показать полное содержимое ячеек
+#pd.set_option('display.max_rows', None)  # Показать все строки
+
+
+
+#1. Прочитать данные из датасета с помощью функции read_csv
+df = pd.read_csv('top_100_movies_full_best_effort.csv')
+
+#2. Распечатать размер датасета, сам датасет, названия его столбцов и статистику
+#по датасету
+
+print('Размер датасета: ', df.shape)
+#print('\nПервые 5 строк датасета:\n', df.head())
+print('\nДатасет:\n', df)
+print('\nСтолбцы датасета:\n',df.columns.tolist())
+print("\nСтатистика:")
+print(df.describe())
+
+# Заполняем пропуски в числовых столбцах средними значениями
+df['Runtime (mins)'] = df['Runtime (mins)'].fillna(df['Runtime (mins)'].mean())
+df['Oscars Won'] = df['Oscars Won'].fillna(df['Oscars Won'].mean())
+
+# Удаляем строки с пропущенными IMDb Rating (целевая переменная)
+df = df.dropna(subset=['IMDb Rating'])
+
+print(f"Размер датасета после обработки: {df.shape}")
+
+#3. Выбрать данные для прогнозирования (y)
+y = df['IMDb Rating']
+
+#4. Задать список столбцов для выборки и саму выборку (X)
+features = ['Year', 'Runtime (mins)', 'Oscars Won']
+x = df[features]
+
+#5. Разбить данные на тренировочный и тестовый набор с помощью функции
+#train_test_split
+x_train, x_test, y_train, y_test = train_test_split(x, y, test_size=0.2, random_state=42)
+
+print(f"Тренировочный набор: {x_train.shape}")
+print(f"Тестовый набор: {x_test.shape}")
+
+#6. Создать и обучить DecisionTreeRegressor для трех или более разных значений
+#глубины дерева. Для каждого регрессора вычислить среднюю абсолютную
+#ошибку (mean_absolute_error). Распечатать глубину дерева и соответствующую
+#ошибку
+
+print("\n--- Decision Tree Results ---")
+for depth in [2, 5, 10, 15]:
+    tree_model = DecisionTreeRegressor(max_depth=depth, random_state=42)
+    tree_model.fit(x_train, y_train)
+    predictions = tree_model.predict(x_test)
+    mae = mean_absolute_error(y_test, predictions)
+    print(f"Глубина {depth}: MAE = {mae:.4f}")
+
+#7. Создать и обучить модель RandomForestRegressor, вычислить и распечатать
+#ошибку
+
+print("\n--- Random Forest Results ---")
+rf_model = RandomForestRegressor(n_estimators=100, random_state=42)
+rf_model.fit(x_train, y_train)
+rf_predictions = rf_model.predict(x_test)
+rf_mae = mean_absolute_error(y_test, rf_predictions)
+print(f"Random Forest MAE = {rf_mae:.4f}")
+
+#8. Сделать вывод, какая модель эффективнее и почему
+print("\n--- Выводы ---")
+
+baseline_mae = mean_absolute_error(y_test, [y_train.mean()] * len(y_test))
+print(f"Базовый прогноз (среднее): MAE = {baseline_mae:.4f}")
+
+
+best_tree_mae = min([mean_absolute_error(y_test, DecisionTreeRegressor(max_depth=d, random_state=42).fit(x_train, y_train).predict(x_test)) for d in [2, 5, 10, 15]])
+print(f"Лучшая Decision Tree MAE: {best_tree_mae:.4f}")
+print(f"Random Forest MAE: {rf_mae:.4f}")
+
+if rf_mae < best_tree_mae:
+    print("Random Forest эффективнее, так как имеет меньшую ошибку.")
+else:
+    print("Decision Tree эффективнее, так как имеет меньшую ошибку.")
